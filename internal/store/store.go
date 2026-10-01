@@ -44,6 +44,18 @@ type Turn struct {
 	CreatedAt time.Time
 }
 
+// Fact is one durable statement about the user, carried between sessions.
+type Fact struct {
+	ID              string
+	Fact            string
+	Key             string
+	Confidence      int
+	Hits            int
+	SourceSessionID string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -188,6 +200,132 @@ func (s *Store) RecentTurns(ctx context.Context, sessionID string, limit int) ([
 	}
 	slices.Reverse(out)
 	return out, nil
+}
+
+// UpsertFact stores a fact. When Key is set and already present the row is
+// updated in place, so a corrected fact supersedes its predecessor instead of
+// contradicting it. An unchanged fact only bumps updated_at and hits.
+func (s *Store) UpsertFact(ctx context.Context, f Fact) error {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO profile_facts
+		(id, fact, key, confidence, hits, source_session_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+		ON CONFLICT(key) WHERE key != '' DO UPDATE SET
+			fact = excluded.fact,
+			confidence = excluded.confidence,
+			updated_at = excluded.updated_at`,
+		f.ID, f.Fact, f.Key, f.Confidence, f.SourceSessionID,
+		formatTime(f.CreatedAt), formatTime(f.UpdatedAt)); err != nil {
+		return fmt.Errorf("upsert fact: %w", err)
+	}
+	return nil
+}
+
+// Facts returns up to limit facts, most recently updated first.
+func (s *Store) Facts(ctx context.Context, limit int) ([]Fact, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, fact, key, confidence, hits, COALESCE(source_session_id, ''), created_at, updated_at
+		FROM profile_facts ORDER BY updated_at DESC, rowid DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query facts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Fact
+	for rows.Next() {
+		var (
+			f                Fact
+			created, updated string
+		)
+		if err := rows.Scan(&f.ID, &f.Fact, &f.Key, &f.Confidence, &f.Hits,
+			&f.SourceSessionID, &created, &updated); err != nil {
+			return nil, fmt.Errorf("scan fact: %w", err)
+		}
+		var err error
+		if f.CreatedAt, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		if f.UpdatedAt, err = parseTime(updated); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate facts: %w", err)
+	}
+	return out, nil
+}
+
+// TouchFacts records that facts were injected into a prompt, so recently useful
+// facts stay near the top of the ordering.
+func (s *Store) TouchFacts(ctx context.Context, ids ...string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `UPDATE profile_facts SET hits = hits + 1 WHERE id = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+	for _, id := range ids {
+		if _, err := stmt.ExecContext(ctx, id); err != nil {
+			return fmt.Errorf("touch fact: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ForgetFact(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM profile_facts WHERE id = ? OR key = ?`, id, id)
+	if err != nil {
+		return fmt.Errorf("forget fact: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("fact %q: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Store) CountFacts(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM profile_facts`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count facts: %w", err)
+	}
+	return n, nil
+}
+
+// MarkReflected records that a session has been reflected. It is called only
+// once facts have been written, so a failed reflection can still be retried.
+func (s *Store) MarkReflected(ctx context.Context, sessionID string, kept int, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO reflections (session_id, facts_kept, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET facts_kept = excluded.facts_kept`,
+		sessionID, kept, formatTime(at))
+	if err != nil {
+		return fmt.Errorf("mark reflected: %w", err)
+	}
+	return nil
+}
+
+// AlreadyReflected reports whether a session has been reflected, so quitting
+// and resuming cannot teach the same conversation twice.
+func (s *Store) AlreadyReflected(ctx context.Context, sessionID string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM reflections WHERE session_id = ?`, sessionID).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query reflections: %w", err)
+	}
+	return n > 0, nil
 }
 
 func formatTime(t time.Time) string { return t.UTC().Format(timeLayout) }

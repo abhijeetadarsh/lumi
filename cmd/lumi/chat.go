@@ -70,9 +70,13 @@ func newChatCmd() *cobra.Command {
 				return err
 			}
 			defer func() {
-				if err := a.Engine.EndSession(context.WithoutCancel(ctx), sess.ID); err != nil {
+				// WithoutCancel: the user may have hit Ctrl+C, but we still want to
+				// close the session and learn from it.
+				bg := context.WithoutCancel(ctx)
+				if err := a.Engine.EndSession(bg, sess.ID); err != nil {
 					slog.Warn("end session", "err", err)
 				}
+				reflectMem(bg, a, sess.ID)
 			}()
 
 			r := ui.New(os.Stdout)
@@ -188,6 +192,25 @@ func repl(ctx context.Context, a *app.App, sess store.Session, r *ui.Renderer, v
 		if err := runTurn(ctx, a.Engine, sess.ID, in, r, vio.speaker); err != nil && !errors.Is(err, errCancelled) {
 			r.Error(err)
 		}
+	}
+}
+
+// reflectMem distils the finished session into durable facts. It runs after the
+// session ends and never blocks the exit for long: a failed or slow reflection is
+// logged and forgotten, since memory is an optimisation, not a correctness need.
+func reflectMem(ctx context.Context, a *app.App, sessionID string) {
+	m := a.Memory()
+	if m == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	n, err := m.Reflect(ctx, sessionID)
+	switch {
+	case err != nil:
+		slog.Warn("reflect session", "session", sessionID, "err", err)
+	case n > 0:
+		slog.Debug("reflected session", "session", sessionID, "facts", n)
 	}
 }
 

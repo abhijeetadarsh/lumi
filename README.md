@@ -52,6 +52,7 @@ lumi chat -s <session-id>          # resume a session
 lumi module list | show <name> | validate <file>
 lumi eval [-v] [suite.yaml...]     # score modules against golden conversations (default evals/*.yaml)
 lumi key set <provider> | delete <provider>
+lumi memory list | forget <id|key> | clear
 lumi config init [--force] | path
 ```
 
@@ -90,6 +91,35 @@ Prompt changes are measured, not guessed. `evals/*.yaml` replays scripted conver
 
 built-in defaults → `~/.lumi/config.yaml` → `LUMI_*` env vars (`__` = nesting, e.g. `LUMI_TIERS__FAST__MODEL=x`).
 
+## Memory
+
+Lumi learns durable facts and carries them between sessions, so it stops asking
+what it was already told. At the end of a session one cheap model call distils
+the conversation into a handful of short facts (`profile_facts`). The next
+session injects them as a capped block in its system prompt.
+
+Only distilled facts are injected — never raw transcripts — and `max_chars` caps
+the block, so **per-turn token cost stays flat** (~150 tokens) whether you have
+10 facts or 5,000. Facts are keyed (`role`, `city`, …), so a later correction
+replaces the old fact instead of contradicting it.
+
+```yaml
+memory:
+  enabled: true
+  max_facts: 8            # most facts one reflection may add or update
+  max_chars: 600          # hard cap on the injected block
+  min_turns: 4            # sessions shorter than this are not reflected on
+  max_reflect_chars: 6000 # transcript budget for the reflection call
+```
+
+Inspect and edit what it knows:
+
+```
+lumi memory list              # every stored fact, with confidence and use count
+lumi memory forget <id|key>   # delete one
+lumi memory clear             # delete them all
+```
+
 ## Data
 
 All data stays local in `~/.lumi/`: `lumi.db` (sessions, turns), `history` (prompt history), `config.yaml`, `modules/`. Delete the directory to erase everything.
@@ -102,6 +132,7 @@ internal/engine/          turn loop, event stream (text | feedback | done)
 internal/coach/           feedback splitter/parser
 internal/ui/              terminal rendering (lipgloss)
 internal/eval/            golden-conversation scoring
+internal/memory/           session reflection, fact store, capped injection
 internal/provider/llm/    LLM interface, tiers; openaicompat/ adapter
 internal/config|module|store|secrets|app
 modules/                  built-in module YAML (embedded)

@@ -7,6 +7,18 @@ default_module: daily-assistant
 # Past messages sent with each turn.
 history_turns: 20
 
+# Cross-session memory. At the end of a session one cheap model call distils the
+# conversation into a handful of durable facts; the next session injects them as a
+# capped block. This is what stops the assistant re-asking things it was already
+# told. Only facts are injected, never raw transcripts, and max_chars caps the
+# block, so the per-turn token cost stays flat as history grows.
+memory:
+  enabled: true
+  max_facts: 8          # most facts one reflection may add or update
+  max_chars: 600        # hard cap on the injected block
+  min_turns: 4          # sessions shorter than this are not reflected on
+  max_reflect_chars: 6000  # transcript budget for the reflection call
+
 # Providers are user-declared: name them anything. `kind` selects the adapter:
 #   openai-compatible  any server speaking the OpenAI HTTP API (chat, stt, tts)
 #   system             the OS's built-in voices (tts only; offline, free, no key)
@@ -35,7 +47,12 @@ history_turns: 20
 # no_auth: true) to keep audio on-device. For tts, kind system needs no setup;
 # its `voice` matches an installed voice name (e.g. part of the name).
 # stt.params are sent as form fields (e.g. language, prompt, temperature).
-# tts.max_chars: longest input the TTS model accepts; longer replies are split.
+#   tts.max_chars: longest input the TTS model accepts; longer replies are split.
+#   tts.voice: for kind google-tts this is a Google voice name. Google's free
+#     monthly tiers are separate per family (4M Standard, 1M WaveNet, 1M Neural2,
+#     1M Chirp 3:HD), so families can be mixed. Quality order is
+#     Chirp 3:HD > Neural2 > WaveNet > Standard. Chirp 3:HD and Neural2 are
+#     en-US only on most keys; use WaveNet for other languages.
 #
 # voice:
 #   stt: { provider: my-provider, model: speech-to-text-model, params: { language: en } }

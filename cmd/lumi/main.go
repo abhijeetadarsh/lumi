@@ -29,6 +29,6 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
-	root.AddCommand(newChatCmd(), newEvalCmd(), newKeyCmd(), newModuleCmd(), newConfigCmd())
+	root.AddCommand(newChatCmd(), newEvalCmd(), newKeyCmd(), newModuleCmd(), newConfigCmd(), newMemoryCmd())
 	return root
 }

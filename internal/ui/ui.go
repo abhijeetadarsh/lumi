@@ -44,6 +44,7 @@ type Renderer struct {
 	width int
 	lg    *lipgloss.Renderer
 	st    styles
+	meter meter
 }
 
 func New(f *os.File) *Renderer {
@@ -128,17 +129,120 @@ func (r *Renderer) Prompt() string {
 
 var meterBars = []rune("▁▂▃▄▅▆▇█")
 
+// Meter tuning. The meter is a calm indication that the mic is live, not a
+// scope: raw RMS bars twitch on every ambient hiss, which reads as visual noise.
+// These constants shape that twitch into something that looks like a clean
+// signal, while still responding immediately when someone actually speaks.
+const (
+	// meterFloorMinDB / meterCeilDB bound the displayed dynamic range, measured
+	// in dB above the learned noise floor. Room tone lands at the bottom and a
+	// loud voice reaches the top.
+	meterFloorMinDB = -46.0
+	meterCeilDB     = -6.0
+	// meterAttack rises quickly so speech onset is never missed; meterRelease
+	// falls slowly so bars do not strobe between syllables.
+	meterAttack  = 0.55
+	meterRelease = 0.12
+	// meterFloorRise / meterFloorFall adapt the noise-floor estimate. The floor
+	// follows sustained background noise but creeps back down slowly, so a
+	// passing fan does not permanently flatten the meter.
+	meterFloorRise = 0.25
+	meterFloorFall = 0.02
+	// meterNoiseMarginDB is how far above the estimated floor a sample must sit
+	// before it registers. Below it, the bar decays toward rest.
+	meterNoiseMarginDB = 6.0
+	// meterGamma > 1 biases the display toward the quieter end, so ordinary
+	// speech produces small, calm movements rather than full-height spikes.
+	meterGamma = 1.35
+	// meterEpsilon floors the logarithm, so digital silence maps to a finite
+	// level instead of negative infinity.
+	meterEpsilon = 1e-7
+	// meterMaxFloor is the loudest background level the floor estimator accepts
+	// (about -34 dBFS). Anything above this is treated as voice. Keeping the
+	// ceiling below quiet speech is what leaves the meter headroom to show it.
+	meterMaxFloor = 0.02
+)
+
+// meter holds the per-bar smoothing and the learned noise floor across calls.
+// The prompt is re-rendered many times a second from a sliding window of raw
+// samples, so state lives here rather than being recomputed each frame.
+type meter struct {
+	shown []float64 // per-bar smoothed level, in dB above the noise floor
+	floor float64   // running background level, linear RMS
+}
+
+func (m *meter) render(levels []float64) string {
+	n := len(levels)
+	if n == 0 {
+		return ""
+	}
+	if len(m.shown) != n {
+		// First frame, or the window changed size. Start the floor low and let it
+		// rise to the room tone: seeding it from levels[0] would make sustained
+		// speech look like its own background and flatten the meter.
+		m.shown = make([]float64, n)
+		m.floor = 0
+	}
+
+	// Track the quietest recent sample as the background floor. Using the
+	// minimum rather than a long average reacts fast when the room goes quiet
+	// and ignores speech, which is loud.
+	quietest := levels[0]
+	for _, l := range levels {
+		if l < quietest {
+			quietest = l
+		}
+	}
+	// The floor describes the room, never the voice. Without this ceiling, a
+	// window of continuous speech makes the quietest sample loud too, the floor
+	// creeps up to meet it, and the meter goes flat exactly when someone is
+	// talking. Clamping to a plausible background range keeps speech readable.
+	quietest = min(quietest, meterMaxFloor)
+	if quietest > m.floor {
+		m.floor += (quietest - m.floor) * meterFloorRise
+	} else {
+		m.floor += (quietest - m.floor) * meterFloorFall
+	}
+
+	floorDB := 20 * math.Log10(max(m.floor, meterEpsilon))
+	span := meterCeilDB - meterFloorMinDB
+	var b strings.Builder
+	for i, l := range levels {
+		// Work in dB relative to the floor throughout. Smoothing raw RMS and
+		// display heights in the same variable mixes units and saturates the
+		// meter, so shown[] holds "dB above the floor", not a bar height.
+		above := 20*math.Log10(max(l, meterEpsilon)) - floorDB
+
+		// The floor itself is not signal: anything inside the margin reads as
+		// rest, so a silent room shows a flat row of the lowest bar.
+		if above < meterNoiseMarginDB {
+			above = 0
+		} else {
+			above -= meterNoiseMarginDB
+		}
+
+		// Asymmetric smoothing: rise quickly so speech onset is never missed,
+		// fall slowly so bars do not strobe between syllables.
+		prev := m.shown[i]
+		gain := meterAttack
+		if above < prev {
+			gain = meterRelease
+		}
+		next := prev + (above-prev)*gain
+		m.shown[i] = next
+
+		h := math.Pow(clamp01(next/span), 1/meterGamma)
+		b.WriteRune(meterBars[min(int(h*float64(len(meterBars))), len(meterBars)-1)])
+	}
+	return b.String()
+}
+
+func clamp01(v float64) float64 { return min(max(v, 0), 1) }
+
 // RecordingPrompt shows a live mic meter; levels are recent loudness samples in [0, 1].
 func (r *Renderer) RecordingPrompt(elapsed time.Duration, levels []float64) string {
 	if !r.tty {
 		return fmt.Sprintf("recording %ds, enter to send> ", int(elapsed.Seconds()))
-	}
-	var meter strings.Builder
-	for _, l := range levels {
-		// Map -50..-10 dBFS onto the bar heights; speech sits roughly in that range.
-		db := 20 * math.Log10(max(l, 1e-6))
-		i := int((db + 50) / 40 * float64(len(meterBars)-1))
-		meter.WriteRune(meterBars[min(max(i, 0), len(meterBars)-1)])
 	}
 	dot := " "
 	if elapsed%time.Second < 700*time.Millisecond {
@@ -146,7 +250,7 @@ func (r *Renderer) RecordingPrompt(elapsed time.Duration, levels []float64) stri
 	}
 	secs := int(elapsed.Seconds())
 	return r.st.you.Render(fmt.Sprintf("%*s", nameW, "you")) + " " + r.st.err.Render(dot) + " " +
-		r.st.dim.Render(fmt.Sprintf("%d:%02d ", secs/60, secs%60)) + r.st.lumi.Render(meter.String()) +
+		r.st.dim.Render(fmt.Sprintf("%d:%02d ", secs/60, secs%60)) + r.st.lumi.Render(r.meter.render(levels)) +
 		r.st.rule.Render("  enter send · ctrl+c cancel ")
 }
 

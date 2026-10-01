@@ -38,6 +38,22 @@ type Config struct {
 	Providers     map[string]Provider `koanf:"providers"`
 	Tiers         map[string]Tier     `koanf:"tiers"`
 	Voice         Voice               `koanf:"voice"`
+	Memory        Memory              `koanf:"memory"`
+}
+
+// Memory configures the cross-session fact store. It is on by default: the
+// injected block is capped by MaxChars, so the per-turn token cost is bounded
+// and does not grow with history.
+type Memory struct {
+	Enabled bool `koanf:"enabled"`
+	// MaxFacts bounds how many facts one reflection may add or update.
+	MaxFacts int `koanf:"max_facts"`
+	// MaxChars hard-caps the injected block. This is the knob that bounds cost.
+	MaxChars int `koanf:"max_chars"`
+	// MinTurns is the shortest session worth reflecting on.
+	MinTurns int `koanf:"min_turns"`
+	// MaxReflectChars bounds the transcript sent to the reflection model.
+	MaxReflectChars int `koanf:"max_reflect_chars"`
 }
 
 type Provider struct {
@@ -189,6 +205,9 @@ func (c Config) Validate() error {
 		if v.needModel && v.model == "" {
 			errs = append(errs, fmt.Errorf("%s.model is required", v.key))
 		}
+	}
+	if m := c.Memory; m.MaxFacts < 0 || m.MaxChars < 0 || m.MinTurns < 0 || m.MaxReflectChars < 0 {
+		errs = append(errs, errors.New("memory limits must be >= 0"))
 	}
 	if c.Voice.TTS.MaxChars < 0 {
 		errs = append(errs, errors.New("voice.tts.max_chars must be >= 0"))

@@ -238,6 +238,100 @@ func TestFailedTurnIsNotPersisted(t *testing.T) {
 	}
 }
 
+// Voice-mode notes must reach the model inside the leading system prompt.
+// Sent as trailing system messages they were routinely ignored, so the model
+// stayed unaware it was speaking and answered with markdown.
+func TestVoiceModeNoteIsInLeadingSystemPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   engine.Input
+		want string
+	}{
+		{"spoken", engine.Input{Text: "hi", Spoken: true}, "talking out loud"},
+		{"transcribed", engine.Input{Text: "hi", Transcribed: true}, "speech-to-text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeLLM{chunks: []llm.Chunk{{Text: "ok"}}}
+			eng := newEngine(t, fake, false)
+			sess, err := eng.StartSession(t.Context(), "coach")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var events []engine.Event
+			for ev, err := range eng.Turn(t.Context(), sess.ID, tc.in) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				events = append(events, ev)
+			}
+			if len(fake.reqs) != 1 {
+				t.Fatalf("got %d requests, want 1", len(fake.reqs))
+			}
+			msgs := fake.reqs[0].Messages
+			if msgs[0].Role != llm.RoleSystem {
+				t.Fatalf("first message role = %q, want system", msgs[0].Role)
+			}
+			if !strings.Contains(msgs[0].Content, tc.want) {
+				t.Errorf("leading system prompt missing %q:\n%s", tc.want, msgs[0].Content)
+			}
+			// It must not be smuggled in as a trailing message.
+			for i, m := range msgs[1:] {
+				if m.Role == llm.RoleSystem && strings.Contains(m.Content, tc.want) {
+					t.Errorf("note duplicated in trailing message %d", i+1)
+				}
+			}
+		})
+	}
+}
+
+// wordSet returns the lowercase words in s, for whole-word matching.
+func wordSet(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}) {
+		out[w] = true
+	}
+	return out
+}
+
+// The voice note must not leak how the conversation is implemented. An earlier
+// version mentioned a text-to-speech engine, and the persona started talking
+// about engines and denying that it had a voice.
+func TestVoiceNoteDoesNotLeakMachinery(t *testing.T) {
+	// Matched as whole words: a naive substring check false-positives on "say"
+	// containing "ai", which says nothing about the prompt's content.
+	banned := []string{
+		"text-to-speech", "tts", "engine", "api", "model", "prompt", "token",
+		"screen", "app", "assistant", "ai", "chatbot", "bot", "transcript",
+		"speech-to-text", "script", "software", "computer", "phone",
+	}
+	words := wordSet(engine.VoiceModeNote())
+	for _, bad := range banned {
+		if words[bad] {
+			t.Errorf("voice mode note mentions %q, which breaks the in-character illusion:\n%s", bad, engine.VoiceModeNote())
+		}
+	}
+	// It must still convey the situation, or the model stays unaware.
+	for _, want := range []string{"out loud", "voice"} {
+		if !strings.Contains(strings.ToLower(engine.VoiceModeNote()), want) {
+			t.Errorf("voice mode note lost %q:\n%s", want, engine.VoiceModeNote())
+		}
+	}
+}
+
+// Without --voice the model must not be told it is speaking.
+func TestNoVoiceNoteWhenNotSpeaking(t *testing.T) {
+	fake := &fakeLLM{chunks: []llm.Chunk{{Text: "ok"}}}
+	eng := newEngine(t, fake, false)
+	sess, _ := eng.StartSession(t.Context(), "coach")
+	for range eng.Turn(t.Context(), sess.ID, engine.Input{Text: "hi"}) {
+	}
+	if got := fake.reqs[0].Messages[0].Content; strings.Contains(got, "VOICE MODE") {
+		t.Errorf("voice note present in a text session:\n%s", got)
+	}
+}
+
 func TestTurnRejectsEmptyInput(t *testing.T) {
 	eng := newEngine(t, &fakeLLM{}, false)
 	sess, err := eng.StartSession(t.Context(), "coach")

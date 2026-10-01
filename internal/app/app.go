@@ -12,12 +12,13 @@ import (
 
 	"github.com/abhijeetadarsh/lumi/internal/config"
 	"github.com/abhijeetadarsh/lumi/internal/engine"
+	"github.com/abhijeetadarsh/lumi/internal/memory"
 	"github.com/abhijeetadarsh/lumi/internal/module"
+	"github.com/abhijeetadarsh/lumi/internal/provider/googletts"
 	"github.com/abhijeetadarsh/lumi/internal/provider/llm"
 	"github.com/abhijeetadarsh/lumi/internal/provider/openaicompat"
 	"github.com/abhijeetadarsh/lumi/internal/provider/speech"
 	"github.com/abhijeetadarsh/lumi/internal/provider/systemtts"
-	"github.com/abhijeetadarsh/lumi/internal/provider/googletts"
 	"github.com/abhijeetadarsh/lumi/internal/secrets"
 	"github.com/abhijeetadarsh/lumi/internal/store"
 	"github.com/abhijeetadarsh/lumi/modules"
@@ -40,17 +41,23 @@ var adapters = map[string]adapter{
 		return c, nil
 	}},
 	// The OS's built-in voices: offline, free, text-to-speech only.
-	"system": {new: func(config.Provider, string) (any, error) { return systemtts.New(), nil }},
+	"system":     {new: func(config.Provider, string) (any, error) { return systemtts.New(), nil }},
 	"google-tts": {remote: true, new: func(p config.Provider, apiKey string) (any, error) { return googletts.New(p.BaseURL, apiKey), nil }},
 }
 
 type App struct {
-	Config   config.Config
-	Modules  *module.Registry
-	Engine   *engine.Engine
-	store    *store.Store
+	Config  config.Config
+	Modules *module.Registry
+	Engine  *engine.Engine
+	// Store is exported so commands can inspect and edit persisted data
+	// (see the memory command).
+	Store    *store.Store
 	resolver *resolver
+	memory   *memory.Memory
 }
+
+// Memory returns the cross-session memory layer, or nil when disabled.
+func (a *App) Memory() *memory.Memory { return a.memory }
 
 func LoadConfig() (config.Config, error) {
 	home, err := config.Home()
@@ -107,16 +114,31 @@ func OpenWithDB(ctx context.Context, dbPath string) (*App, error) {
 		return nil, err
 	}
 	res := newResolver(cfg, secrets.APIKey)
+	// A nil *memory.Memory must not be assigned into the interface field: the
+	// engine's `memory != nil` check would pass and every turn would panic in
+	// Inject. Keep the interface nil until memory is genuinely enabled.
+	var memIfc engine.Memory
+	var mem *memory.Memory
+	if cfg.Memory.Enabled {
+		mem = memory.New(st, res, memory.Options{
+			MaxFacts:        cfg.Memory.MaxFacts,
+			MaxChars:        cfg.Memory.MaxChars,
+			MinTurns:        cfg.Memory.MinTurns,
+			MaxReflectChars: cfg.Memory.MaxReflectChars,
+		})
+		memIfc = mem
+	}
 	eng := engine.New(engine.Options{
 		Store:        st,
 		Modules:      mods,
 		Resolver:     res,
 		HistoryTurns: cfg.HistoryTurns,
+		Memory:       memIfc,
 	})
-	return &App{Config: cfg, Modules: mods, Engine: eng, store: st, resolver: res}, nil
+	return &App{Config: cfg, Modules: mods, Engine: eng, Store: st, resolver: res, memory: mem}, nil
 }
 
-func (a *App) Close() error { return a.store.Close() }
+func (a *App) Close() error { return a.Store.Close() }
 
 // Voice resolves the configured speech clients; each is nil when not configured.
 func (a *App) Voice() (*speech.STTTarget, *speech.TTSTarget, error) {

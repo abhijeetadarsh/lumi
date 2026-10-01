@@ -45,10 +45,33 @@ type Input struct {
 	Spoken      bool
 }
 
-const (
-	transcriptNote = "The user's message is a speech-to-text transcript: ignore spelling, capitalization and punctuation, and allow for misheard words."
-	spokenNote     = "Your reply will be read aloud: plain spoken sentences only, no emoji, markdown or lists."
-)
+// voiceModeNote puts the model in a spoken conversation.
+//
+// Two things here are load-bearing, both learned the hard way:
+//
+//  1. It must state the situation as fact. Framed as a formatting instruction
+//     ("your reply will be read aloud"), models answer "I have no access to
+//     your environment" when asked whether they are being spoken to.
+//  2. It must never mention the machinery. An earlier version said "spoken aloud
+//     by a text-to-speech engine", and the persona promptly started talking
+//     about text-to-speech engines and denying that it had a voice at all. The
+//     user hears a person, so from the inside it is just a conversation.
+//
+// Keep it experiential: the user is speaking, you are speaking, and only what
+// is said can be seen.
+const voiceModeNote = `You and the user are talking out loud, right now, in a live conversation. Whatever you say is spoken in a voice, so they hear it, and whatever they say reaches you as speech.
+
+- Write for the ear: short plain sentences. No markdown, bullet lists, headings, emoji, code blocks, tables or URLs. Nothing you write is ever displayed, so skip anything visual.
+- Keep it brief and natural. You are having a conversation, not producing a document.
+- This is just talking. Speak the way a person does, and carry on being yourself.`
+
+// VoiceModeNote exposes the voice-mode note for tests, which assert it never
+// leaks implementation detail into the prompt.
+func VoiceModeNote() string { return voiceModeNote }
+
+// transcriptNote marks the user's message as speech-to-text output, so spelling
+// and punctuation errors are read as mishearing rather than mistakes.
+const transcriptNote = "The user's message arrived as a speech-to-text transcript, so ignore spelling, capitalization and punctuation, and read through likely misheard words."
 
 type Store interface {
 	CreateSession(ctx context.Context, s store.Session) error
@@ -56,6 +79,13 @@ type Store interface {
 	EndSession(ctx context.Context, id string, at time.Time) error
 	AppendTurns(ctx context.Context, turns ...store.Turn) error
 	RecentTurns(ctx context.Context, sessionID string, limit int) ([]store.Turn, error)
+}
+
+// Memory supplies the durable cross-session block injected into the system
+// prompt. It is an interface so the engine does not depend on the memory
+// package, and so tests can pass a stub.
+type Memory interface {
+	Inject(ctx context.Context) (string, error)
 }
 
 type Modules interface {
@@ -67,6 +97,8 @@ type Options struct {
 	Modules      Modules
 	Resolver     llm.Resolver
 	HistoryTurns int
+	// Memory is optional; when nil no cross-session facts are injected.
+	Memory Memory
 }
 
 type Engine struct {
@@ -74,6 +106,7 @@ type Engine struct {
 	modules      Modules
 	resolver     llm.Resolver
 	historyTurns int
+	memory       Memory
 	now          func() time.Time
 }
 
@@ -83,6 +116,7 @@ func New(o Options) *Engine {
 		modules:      o.Modules,
 		resolver:     o.Resolver,
 		historyTurns: o.HistoryTurns,
+		memory:       o.Memory,
 		now:          time.Now,
 	}
 }
@@ -148,13 +182,29 @@ func (e *Engine) Turn(ctx context.Context, sessionID string, in Input) iter.Seq2
 			return
 		}
 
-		msgs := buildMessages(spec.System, history, text)
+		system := spec.System
+		if e.memory != nil {
+			// Cross-session facts go in their own system message rather than being
+			// concatenated into the persona prompt, so a module's prompt stays
+			// diffable and the memory block can be capped independently.
+			if block, err := e.memory.Inject(ctx); err != nil {
+				slog.Warn("memory inject failed", "err", err)
+			} else if block != "" {
+				system = system + "\n\n" + block
+			}
+		}
+
+		// Voice-mode notes belong in the leading system prompt. As separate
+		// trailing system messages they were frequently ignored, which left the
+		// model unaware it was speaking and free to answer in markdown.
 		if in.Transcribed {
-			msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: transcriptNote})
+			system += "\n\n" + transcriptNote
 		}
 		if in.Spoken {
-			msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: spokenNote})
+			system += "\n\n" + voiceModeNote
 		}
+
+		msgs := buildMessages(system, history, text)
 		assess := spec.Feedback && coach.Assessable(text)
 		switch {
 		case assess:
