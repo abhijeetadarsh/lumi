@@ -1,3 +1,11 @@
 .env
 bin/
 .lumi
+.gocache
+
+# Local run scripts: these hold real API keys, so they stay out of the repo.
+setenv.sh
+setenv.bat
+
+# Scratch one-off programs; the real CLI lives in cmd/lumi.
+cmd/testtts/

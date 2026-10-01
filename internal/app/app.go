@@ -17,6 +17,7 @@ import (
 	"github.com/abhijeetadarsh/lumi/internal/provider/openaicompat"
 	"github.com/abhijeetadarsh/lumi/internal/provider/speech"
 	"github.com/abhijeetadarsh/lumi/internal/provider/systemtts"
+	"github.com/abhijeetadarsh/lumi/internal/provider/googletts"
 	"github.com/abhijeetadarsh/lumi/internal/secrets"
 	"github.com/abhijeetadarsh/lumi/internal/store"
 	"github.com/abhijeetadarsh/lumi/modules"
@@ -40,6 +41,7 @@ var adapters = map[string]adapter{
 	}},
 	// The OS's built-in voices: offline, free, text-to-speech only.
 	"system": {new: func(config.Provider, string) (any, error) { return systemtts.New(), nil }},
+	"google-tts": {remote: true, new: func(p config.Provider, apiKey string) (any, error) { return googletts.New(p.BaseURL, apiKey), nil }},
 }
 
 type App struct {

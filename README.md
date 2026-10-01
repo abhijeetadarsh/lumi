@@ -55,6 +55,25 @@ lumi key set <provider> | delete <provider>
 lumi config init [--force] | path
 ```
 
+### Voice on Linux
+
+Voice mode shells out to the system's audio tools, trying them in order and
+verifying each one actually delivers samples:
+
+| Role | Tried in order |
+|------|----------------|
+| capture | `pw-record`, `pw-cat`, `parecord`, `ffmpeg`, `arecord` |
+| playback | `paplay`, `pw-play`, `aplay`, `play`, `ffplay`, `cvlc`, `mpv`, `gst-play-1.0` |
+
+Install whichever your distro ships — `pipewire-utils` (PipeWire), `alsa-utils`
+(plain ALSA), or `ffmpeg` — and no configuration is needed. Override with
+`LUMI_AUDIO_RECORD` / `LUMI_AUDIO_PLAY` (plus `LUMI_AUDIO_RECORD_ARGS` /
+`LUMI_AUDIO_PLAY_ARGS` for extra flags). A tool that starts but stays silent is
+skipped automatically rather than yielding an empty recording.
+
+Recording is requested at 16 kHz mono, which the tools resample from the device
+as needed.
+
 In chat: `Ctrl+C` interrupts the reply, `Ctrl+D` or `/exit` quits. Output is colored and wrapped on a terminal, plain when piped or with `NO_COLOR=1`. Add `--debug` for logs.
 
 ## Modules
