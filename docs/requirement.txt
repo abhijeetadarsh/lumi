@@ -1,0 +1,18 @@
+Lumi is a personalized voice first/chatbot 
+personalization is done through module sys prompts
+
+also self learning in nature
+model agnostic in nature
+llm and stt and tts models
+
+written in go
+provide cli and restful inteface to connect
+
+============================use case====================
+My personal use case is 
+learning english to the top notch level fluency/grammer/vocab - require critic
+for proffesional work and daily life
+practice very good level of technical/desiginig interview that will help me - require good level of reasoning
+daily life assistant
+
+in-general = i want less verbose/to the point/critic/good grounded knowledge/very less halucination

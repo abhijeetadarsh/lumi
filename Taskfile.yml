@@ -1,0 +1,28 @@
+version: '3'
+
+dotenv: ['.env']
+
+env:
+  CGO_ENABLED: '0'
+
+tasks:
+  build:
+    desc: Build the lumi binary into bin/
+    cmds:
+      - go build -trimpath -o bin/ ./cmd/lumi
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run vet and golangci-lint
+    cmds:
+      - go vet ./...
+      - golangci-lint run
+
+  chat:
+    desc: Start an interactive chat
+    cmds:
+      - go run ./cmd/lumi chat {{.CLI_ARGS}}

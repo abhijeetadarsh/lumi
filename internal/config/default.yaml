@@ -1,0 +1,42 @@
+# Lumi configuration. Values here override built-in defaults;
+# LUMI_* environment variables override this file (use "__" for nesting,
+# e.g. LUMI_TIERS__FAST__MODEL=my-model).
+
+default_module: daily-assistant
+
+# Past messages sent with each turn.
+history_turns: 20
+
+# Providers are user-declared: name them anything. `kind` selects the adapter:
+#   openai-compatible  any server speaking the OpenAI HTTP API (chat, stt, tts)
+#   system             the OS's built-in voices (tts only; offline, free, no key)
+# API key lookup order: LUMI_<NAME>_API_KEY, then api_key_env, then the OS
+# keyring (`lumi key set <name>`). Set no_auth: true for local servers.
+#
+# providers:
+#   my-provider:
+#     kind: openai-compatible
+#     base_url: https://api.example.com/v1
+#     api_key_env: MY_PROVIDER_API_KEY
+
+# Modules request a tier (fast | reasoning | cheap); map each to a provider + model.
+# no_temperature: true  -> for models that reject the temperature parameter.
+# params: {...}         -> provider-specific request fields, sent as-is; they
+#                          override module settings such as temperature.
+#
+# tiers:
+#   fast:      { provider: my-provider, model: small-model }
+#   reasoning: { provider: my-provider, model: large-model, params: { reasoning_effort: high } }
+#   cheap:     { provider: my-provider, model: small-model }
+
+# Voice mode (`lumi chat --voice`) is optional: stt listens, tts speaks. Either
+# half works alone. Any provider with kind openai-compatible can serve them —
+# hosted, or a local speech server (base_url: http://localhost:<port>/v1,
+# no_auth: true) to keep audio on-device. For tts, kind system needs no setup;
+# its `voice` matches an installed voice name (e.g. part of the name).
+# stt.params are sent as form fields (e.g. language, prompt, temperature).
+# tts.max_chars: longest input the TTS model accepts; longer replies are split.
+#
+# voice:
+#   stt: { provider: my-provider, model: speech-to-text-model, params: { language: en } }
+#   tts: { provider: my-provider, model: text-to-speech-model, voice: some-voice, max_chars: 200 }

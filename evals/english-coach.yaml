@@ -1,0 +1,61 @@
+module: english-coach
+cases:
+  - name: small-talk-feels-human
+    turns:
+      - Hey hi.
+      - I am having a good day. today.
+      - How is your day?
+      - Not much work on my plate, today.
+      - What is your name? and where do you belong.
+      - Are you a girl or a guy?
+    checks:
+      max_question_ratio: 0.5
+      min_upgrade_ratio: 1.0
+      max_reply_words: 60
+      banned_phrases:
+        - that's great to hear
+        - great question
+        - pronoun
+        - please provide
+        - i am functioning
+        - physical home
+      once_phrases: # fine once; robotic when repeated
+        - that sounds like
+        - glad to hear
+        - that's nice
+        - miso
+      no_fix_on: [0, 1, 2, 3, 5] # casual register and punctuation are fine
+      expect_fix:
+        - { turn: 4, suggested: where are you from }
+
+  - name: grammar-errors-are-caught
+    turns:
+      - Yesterday I have went to office and discussed about the project with my manager.
+    checks:
+      min_upgrade_ratio: 1.0
+      expect_fix:
+        - { turn: 0, original: have went, suggested: went }
+        - { turn: 0, suggested: the office }
+        - { turn: 0, original: discussed about }
+
+  # "Nonsense" session (2026-09-30): stray keystrokes got invented upgrades.
+  - name: stray-keystrokes-get-no-feedback
+    turns: [Hi, x, y, l]
+    checks:
+      no_feedback_on: [1, 2, 3]
+
+  # Missed in a real session (2026-09-30).
+  - name: everyday-chat-errors
+    turns:
+      - Wait a minuite, how are you?
+      - Let's talk about something. and share our thoughts.
+      - Usually last time I have a big laugh while watching some reels on ig.
+      - I am trying to get out of this reels trap but I couldn't but i reduced it a little by self control.
+      - Ok byeee.
+    checks:
+      min_upgrade_ratio: 1.0
+      no_fix_on: [4] # "Ok byeee." is fine casual chat
+      expect_fix:
+        - { turn: 0, original: minuite, suggested: minute }
+        - { turn: 2, suggested: had }
+        - { turn: 3 } # any fix: doubled "but" / tense
